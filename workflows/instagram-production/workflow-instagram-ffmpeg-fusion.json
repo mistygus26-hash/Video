@@ -1,0 +1,465 @@
+{
+  "name": "Instagram Video Editor & Publisher (FFmpeg + Graph API)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "video-edit",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook: Start Video Edit",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 400],
+      "webhookId": "instagram-video-edit"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "project_id",
+              "name": "project_id",
+              "value": "={{ 'project_' + $now.toMillis() }}",
+              "type": "string"
+            },
+            {
+              "id": "video_urls",
+              "name": "video_urls",
+              "value": "={{ $json.body.video_urls }}",
+              "type": "array"
+            },
+            {
+              "id": "text_overlay",
+              "name": "text_overlay",
+              "value": "={{ $json.body.text || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "music_url",
+              "name": "music_url",
+              "value": "={{ $json.body.music_url || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "caption",
+              "name": "caption",
+              "value": "={{ $json.body.caption || 'New Video Post' }}",
+              "type": "string"
+            },
+            {
+              "id": "temp_dir",
+              "name": "temp_dir",
+              "value": "={{ '/tmp/n8n/' + $('Webhook: Start Video Edit').item.json.body.project_id || 'project_' + $now.toMillis() }}",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "id": "set-variables",
+      "name": "Set Project Variables",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 400]
+    },
+    {
+      "parameters": {
+        "command": "=mkdir -p {{ $json.temp_dir }}"
+      },
+      "id": "create-temp-dir",
+      "name": "Create Temp Directory",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [680, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Split video URLs into separate items\nconst videoUrls = $input.first().json.video_urls;\nconst projectId = $input.first().json.project_id;\nconst tempDir = $input.first().json.temp_dir;\n\nconst items = videoUrls.map((url, index) => ({\n  json: {\n    project_id: projectId,\n    temp_dir: tempDir,\n    video_url: url,\n    video_index: index,\n    video_filename: `clip_${index}.mp4`\n  }\n}));\n\nreturn items;"
+      },
+      "id": "split-videos",
+      "name": "Split Video URLs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 400]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.video_url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "download-video",
+      "name": "Download Video Clip",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 400]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "={{ $json.temp_dir }}/{{ $json.video_filename }}",
+        "dataPropertyName": "data",
+        "options": {}
+      },
+      "id": "save-video",
+      "name": "Save Video Clip",
+      "type": "n8n-nodes-base.writeToFile",
+      "typeVersion": 1,
+      "position": [1340, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $('Set Project Variables').first().json.music_url }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "check-music",
+      "name": "Has Music?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1560, 400]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Set Project Variables').first().json.music_url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "download-music",
+      "name": "Download Music",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1780, 300]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "={{ $('Set Project Variables').first().json.temp_dir }}/music.mp3",
+        "dataPropertyName": "data",
+        "options": {}
+      },
+      "id": "save-music",
+      "name": "Save Music",
+      "type": "n8n-nodes-base.writeToFile",
+      "typeVersion": 1,
+      "position": [2000, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate all clips and prepare FFmpeg concat list\nconst allItems = $input.all();\nconst firstItem = allItems[0].json;\nconst projectId = firstItem.project_id;\nconst tempDir = firstItem.temp_dir;\n\n// Create concat file content\nlet concatContent = '';\nallItems.forEach(item => {\n  concatContent += `file '${tempDir}/${item.json.video_filename}'\\n`;\n});\n\nreturn [{\n  json: {\n    project_id: projectId,\n    temp_dir: tempDir,\n    concat_content: concatContent,\n    final_filename: `final_${projectId}.mp4`,\n    text_overlay: $('Set Project Variables').first().json.text_overlay,\n    has_music: $('Set Project Variables').first().json.music_url !== ''\n  }\n}];"
+      },
+      "id": "prepare-concat",
+      "name": "Prepare FFmpeg Concat",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2220, 400]
+    },
+    {
+      "parameters": {
+        "command": "=echo '{{ $json.concat_content }}' > {{ $json.temp_dir }}/concat.txt"
+      },
+      "id": "write-concat",
+      "name": "Write Concat File",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [2440, 400]
+    },
+    {
+      "parameters": {
+        "command": "=#!/bin/bash\nset -e\n\nTEMP_DIR=\"{{ $json.temp_dir }}\"\nOUTPUT=\"${TEMP_DIR}/{{ $json.final_filename }}\"\nTEXT=\"{{ $json.text_overlay }}\"\n\n# Step 1: Concatenate videos\nffmpeg -f concat -safe 0 -i ${TEMP_DIR}/concat.txt -c copy ${TEMP_DIR}/merged.mp4\n\n# Step 2: Add text overlay if present\nif [ ! -z \"$TEXT\" ]; then\n  ffmpeg -i ${TEMP_DIR}/merged.mp4 \\\n    -vf \"drawtext=text='$TEXT':fontcolor=white:fontsize=64:box=1:boxcolor=black@0.6:boxborderw=10:x=(w-text_w)/2:y=h-th-80\" \\\n    -codec:a copy ${TEMP_DIR}/with_text.mp4\n  mv ${TEMP_DIR}/with_text.mp4 ${TEMP_DIR}/merged.mp4\nfi\n\n# Step 3: Add music if present\nif [ -f \"${TEMP_DIR}/music.mp3\" ]; then\n  ffmpeg -i ${TEMP_DIR}/merged.mp4 -i ${TEMP_DIR}/music.mp3 \\\n    -filter_complex \"[0:a][1:a]amix=inputs=2:duration=shortest:dropout_transition=2[aout]\" \\\n    -map 0:v -map \"[aout]\" -c:v copy -c:a aac -b:a 192k ${TEMP_DIR}/with_music.mp4\n  mv ${TEMP_DIR}/with_music.mp4 ${TEMP_DIR}/merged.mp4\nfi\n\n# Step 4: Convert to Instagram Reels format (9:16, H.265)\nffmpeg -i ${TEMP_DIR}/merged.mp4 \\\n  -c:v libx265 -crf 23 -preset fast \\\n  -vf \"scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1\" \\\n  -c:a aac -b:a 128k \\\n  -r 30 -pix_fmt yuv420p \\\n  -movflags +faststart \\\n  $OUTPUT\n\necho \"Video ready: $OUTPUT\""
+      },
+      "id": "ffmpeg-process",
+      "name": "FFmpeg: Process Video",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [2660, 400]
+    },
+    {
+      "parameters": {
+        "filePath": "={{ $json.temp_dir }}/{{ $json.final_filename }}",
+        "options": {}
+      },
+      "id": "read-final-video",
+      "name": "Read Final Video",
+      "type": "n8n-nodes-base.readBinaryFile",
+      "typeVersion": 1,
+      "position": [2880, 400]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "🎬 **Nouvelle vidéo prête !**\n\nProjet: {{ $('Set Project Variables').first().json.project_id }}\nTexte: {{ $('Set Project Variables').first().json.text_overlay }}\nCaption: {{ $('Set Project Variables').first().json.caption }}\n\n✅ Approuver: /approve\n❌ Rejeter: /reject",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "telegram-approval",
+      "name": "Send Telegram Approval",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [3100, 400],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot",
+          "name": "Telegram Bot API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "seconds",
+              "secondsInterval": 300
+            }
+          ]
+        }
+      },
+      "id": "wait-approval",
+      "name": "Wait for Approval (5min)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [3320, 400],
+      "webhookId": "wait-approval-response"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.message.text }}",
+              "operation": "contains",
+              "value2": "/approve"
+            }
+          ]
+        }
+      },
+      "id": "check-approval",
+      "name": "Is Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3540, 400]
+    },
+    {
+      "parameters": {
+        "command": "=stat -c%s \"{{ $('Prepare FFmpeg Concat').first().json.temp_dir }}/{{ $('Prepare FFmpeg Concat').first().json.final_filename }}\""
+      },
+      "id": "get-filesize",
+      "name": "Get Video File Size",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [3760, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v22.0/{{ $env.INSTAGRAM_USER_ID }}/media",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "facebookGraphApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "media_type",
+              "value": "REELS"
+            },
+            {
+              "name": "video_url",
+              "value": "={{ $env.N8N_WEBHOOK_URL }}/webhook/video-file/{{ $('Prepare FFmpeg Concat').first().json.project_id }}"
+            },
+            {
+              "name": "caption",
+              "value": "={{ $('Set Project Variables').first().json.caption }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "init-instagram",
+      "name": "1. Initialize Instagram Upload",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3980, 300],
+      "credentials": {
+        "facebookGraphApi": {
+          "id": "facebook_graph",
+          "name": "Facebook Graph API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v22.0/{{ $env.INSTAGRAM_USER_ID }}/media_publish",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "facebookGraphApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "creation_id",
+              "value": "={{ $json.id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "publish-instagram",
+      "name": "2. Publish to Instagram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4200, 300]
+    },
+    {
+      "parameters": {
+        "command": "=rm -rf {{ $('Prepare FFmpeg Concat').first().json.temp_dir }}"
+      },
+      "id": "cleanup",
+      "name": "Cleanup Temp Files",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [4420, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true, instagram_id: $json.id, project_id: $('Set Project Variables').first().json.project_id } }}"
+      },
+      "id": "success-response",
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [4640, 300]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "✅ **Vidéo publiée sur Instagram !**\n\nProjet: {{ $('Set Project Variables').first().json.project_id }}\nID Instagram: {{ $json.id }}",
+        "additionalFields": {}
+      },
+      "id": "telegram-success",
+      "name": "Telegram Success Notification",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [4640, 480],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot",
+          "name": "Telegram Bot API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, error: 'Rejected by user' } }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "rejected-response",
+      "name": "Rejected Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [3760, 500]
+    }
+  ],
+  "connections": {
+    "Webhook: Start Video Edit": {
+      "main": [[{ "node": "Set Project Variables", "type": "main", "index": 0 }]]
+    },
+    "Set Project Variables": {
+      "main": [[{ "node": "Create Temp Directory", "type": "main", "index": 0 }]]
+    },
+    "Create Temp Directory": {
+      "main": [[{ "node": "Split Video URLs", "type": "main", "index": 0 }]]
+    },
+    "Split Video URLs": {
+      "main": [[{ "node": "Download Video Clip", "type": "main", "index": 0 }]]
+    },
+    "Download Video Clip": {
+      "main": [[{ "node": "Save Video Clip", "type": "main", "index": 0 }]]
+    },
+    "Save Video Clip": {
+      "main": [[{ "node": "Has Music?", "type": "main", "index": 0 }]]
+    },
+    "Has Music?": {
+      "main": [
+        [{ "node": "Download Music", "type": "main", "index": 0 }],
+        [{ "node": "Prepare FFmpeg Concat", "type": "main", "index": 0 }]
+      ]
+    },
+    "Download Music": {
+      "main": [[{ "node": "Save Music", "type": "main", "index": 0 }]]
+    },
+    "Save Music": {
+      "main": [[{ "node": "Prepare FFmpeg Concat", "type": "main", "index": 0 }]]
+    },
+    "Prepare FFmpeg Concat": {
+      "main": [[{ "node": "Write Concat File", "type": "main", "index": 0 }]]
+    },
+    "Write Concat File": {
+      "main": [[{ "node": "FFmpeg: Process Video", "type": "main", "index": 0 }]]
+    },
+    "FFmpeg: Process Video": {
+      "main": [[{ "node": "Read Final Video", "type": "main", "index": 0 }]]
+    },
+    "Read Final Video": {
+      "main": [[{ "node": "Send Telegram Approval", "type": "main", "index": 0 }]]
+    },
+    "Send Telegram Approval": {
+      "main": [[{ "node": "Wait for Approval (5min)", "type": "main", "index": 0 }]]
+    },
+    "Wait for Approval (5min)": {
+      "main": [[{ "node": "Is Approved?", "type": "main", "index": 0 }]]
+    },
+    "Is Approved?": {
+      "main": [
+        [{ "node": "Get Video File Size", "type": "main", "index": 0 }],
+        [{ "node": "Rejected Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get Video File Size": {
+      "main": [[{ "node": "1. Initialize Instagram Upload", "type": "main", "index": 0 }]]
+    },
+    "1. Initialize Instagram Upload": {
+      "main": [[{ "node": "2. Publish to Instagram", "type": "main", "index": 0 }]]
+    },
+    "2. Publish to Instagram": {
+      "main": [[{ "node": "Cleanup Temp Files", "type": "main", "index": 0 }]]
+    },
+    "Cleanup Temp Files": {
+      "main": [
+        [{ "node": "Success Response", "type": "main", "index": 0 }],
+        [{ "node": "Telegram Success Notification", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-11-19T12:00:00.000Z",
+  "versionId": "production-v1"
+}
