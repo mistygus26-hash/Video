@@ -1,10 +1,73 @@
 # 🔧 Troubleshooting Guide - Instagram Video Editor Workflow
 
 ## Table des matières
+- [Erreur: Binary file 'data' not found (Save Audio)](#erreur-binary-file-data-not-found-save-audio)
 - [Erreur: Invalid file_id (Telegram Audio)](#erreur-invalid-file_id-telegram-audio)
 - [Erreur: Node Cloudinary manquant](#erreur-node-cloudinary-manquant)
 - [Erreur: Merge node conflictuel](#erreur-merge-node-conflictuel)
 - [Erreur: FFmpeg échoue](#erreur-ffmpeg-échoue)
+
+---
+
+## Erreur: Binary file 'data' not found (Save Audio)
+
+### Symptôme
+```json
+{
+  "errorMessage": "This operation expects the node's input data to contain a binary file 'data', but none was found [item 0]"
+}
+```
+Dans le node "Save Telegram Audio"
+
+### Cause
+Lorsque le node `Download Telegram Audio` a l'option `onError: "continueRegularOutput"` activée, il continue l'exécution même en cas d'erreur (file_id invalide, fichier expiré, etc.) mais **sans données binaires**. Le node suivant `Save Telegram Audio` tente alors d'écrire un fichier binaire qui n'existe pas.
+
+### Solution appliquée (v4)
+
+1. **Ajout du node "Has Binary Data?"** entre Download et Save :
+```json
+{
+  "name": "Has Binary Data?",
+  "type": "n8n-nodes-base.if",
+  "parameters": {
+    "conditions": {
+      "conditions": [{
+        "leftValue": "={{ Object.keys($binary || {}).length }}",
+        "rightValue": "0",
+        "operator": {"type": "number", "operation": "gt"}
+      }]
+    }
+  }
+}
+```
+
+2. **Nouveau flux de connexions** :
+```
+Download Telegram Audio → Has Binary Data?
+                            ├── true → Save Telegram Audio → Normalize
+                            └── false → Normalize Telegram Data
+```
+
+3. **Mise à jour de Normalize Telegram Data** pour vérifier si l'audio a été sauvegardé :
+```javascript
+let hasMusic = false;
+let musicFile = null;
+
+try {
+  const saveAudioNode = $('Save Telegram Audio').first();
+  if (saveAudioNode && saveAudioNode.json) {
+    hasMusic = true;
+    musicFile = telegramData.temp_dir + '/music.mp3';
+  }
+} catch (e) {
+  // Le node Save Telegram Audio n'a pas été exécuté = pas d'audio
+  hasMusic = false;
+  musicFile = null;
+}
+```
+
+### Références
+- [n8n Community - Binary file issue](https://community.n8n.io/t/the-telegram-get-file-module-does-not-return-a-binary-file/88013)
 
 ---
 
@@ -165,6 +228,11 @@ INSTAGRAM_USER_ID=17841478707012581
 ---
 
 ## Changelog des corrections
+
+### v4 (2025-11-28)
+- ✅ Fix: Binary file 'data' not found sur Save Telegram Audio
+- ✅ Ajout: Node "Has Binary Data?" pour vérifier les données binaires avant sauvegarde
+- ✅ Amélioration: Normalize Telegram Data vérifie si l'audio a été sauvegardé via try/catch
 
 ### v3 (2025-11-27)
 - ✅ Fix: Invalid file_id pour audio Telegram
