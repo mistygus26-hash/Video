@@ -22,11 +22,11 @@ Dans le node "Save Telegram Audio"
 ### Cause
 Lorsque le node `Download Telegram Audio` a l'option `onError: "continueRegularOutput"` activée, il continue l'exécution même en cas d'erreur (file_id invalide, fichier expiré, etc.) mais **sans données binaires**. Le node suivant `Save Telegram Audio` tente alors d'écrire un fichier binaire qui n'existe pas.
 
-### Solution appliquée (v6) - CORRECTIF DÉFINITIF
+### Solution appliquée (v7) - CORRECTIF DÉFINITIF avec CURL
 
-**Problème racine identifié** : Le node Telegram natif "Get File" avec `onError: continueRegularOutput` ne retourne parfois pas les données binaires correctement. C'est un [problème connu](https://community.n8n.io/t/the-telegram-get-file-module-does-not-return-a-binary-file/88013) dans n8n.
+**Problème racine** : Tous les nodes n8n (Telegram, HTTP Request, Read/Write File) ont des problèmes de transmission des données binaires entre eux. Après 6 versions de tentatives, aucune combinaison de nodes n8n ne fonctionne de manière fiable.
 
-**Solution v6** : Remplacer le node Telegram par une approche **HTTP Request en 2 étapes** qui télécharge le fichier directement depuis l'API Telegram.
+**Solution v7** : Utiliser **Execute Command avec curl** pour télécharger le fichier directement sur le disque, contournant complètement les problèmes de binary data des nodes n8n.
 
 #### Nouveau flux de téléchargement audio
 
@@ -34,68 +34,65 @@ Lorsque le node `Download Telegram Audio` a l'option `onError: "continueRegularO
 Has Telegram Audio? (true)
     │
     ▼
-Get Audio File Path (HTTP Request)
-    │ URL: https://api.telegram.org/bot{TOKEN}/getFile?file_id={audio_file_id}
-    │ Retourne: { ok: true, result: { file_path: "..." } }
+Download Audio with Curl (Execute Command)
+    │ Script bash qui :
+    │ 1. Appelle getFile API pour obtenir file_path
+    │ 2. Télécharge le fichier avec curl -o
+    │ 3. Vérifie que le fichier existe
     │
     ▼
-File Path OK? (IF: $json.ok === true)
+Audio Download OK? (IF: stdout contains "SUCCESS")
     │
-    ├── true ──▶ Download Audio Binary (HTTP Request)
-    │            │ URL: https://api.telegram.org/file/bot{TOKEN}/{file_path}
-    │            │ Response Format: File (binary)
-    │            │
-    │            ▼
-    │            Save Telegram Audio ──▶ Normalize
-    │
-    └── false ──▶ Normalize Telegram Data (skip audio)
+    ├── true/false ──▶ Normalize Telegram Data
 ```
 
-#### Configuration des nodes
+#### Script bash du node "Download Audio with Curl"
 
-1. **Get Audio File Path** (HTTP Request) :
-```json
-{
-  "url": "https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/getFile?file_id={{ $('Parse Telegram Video').first().json.audio_file_id }}",
-  "onError": "continueRegularOutput"
-}
-```
+```bash
+#!/bin/bash
+set -e
+BOT_TOKEN="$TELEGRAM_BOT_TOKEN"
+FILE_ID="{{ $('Parse Telegram Video').first().json.audio_file_id }}"
+OUTPUT_FILE="{{ $('Parse Telegram Video').first().json.temp_dir }}/music.mp3"
 
-2. **File Path OK?** (IF) :
-```json
-{
-  "conditions": [{ "leftValue": "={{ $json.ok }}", "rightValue": true }]
-}
-```
+# Étape 1: Obtenir le file_path via getFile API
+FILE_INFO=$(curl -s "https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${FILE_ID}")
+FILE_PATH=$(echo "$FILE_INFO" | grep -o '"file_path":"[^"]*"' | cut -d'"' -f4)
 
-3. **Download Audio Binary** (HTTP Request) :
-```json
-{
-  "url": "https://api.telegram.org/file/bot{{ $env.TELEGRAM_BOT_TOKEN }}/{{ $json.result.file_path }}",
-  "options": {
-    "response": { "response": { "responseFormat": "file" } }
-  }
-}
+if [ -z "$FILE_PATH" ]; then
+  echo "ERROR: Could not get file_path from Telegram API"
+  echo "Response: $FILE_INFO"
+  exit 1
+fi
+
+# Étape 2: Télécharger le fichier
+curl -s -o "$OUTPUT_FILE" "https://api.telegram.org/file/bot${BOT_TOKEN}/${FILE_PATH}"
+
+if [ -f "$OUTPUT_FILE" ] && [ -s "$OUTPUT_FILE" ]; then
+  echo "SUCCESS: Audio downloaded to $OUTPUT_FILE"
+else
+  echo "ERROR: Failed to download audio file"
+  exit 1
+fi
 ```
 
 ### Pourquoi cette solution fonctionne
 
-1. **Séparation des étapes** : L'API Telegram nécessite 2 appels séparés (getFile pour le path, puis download)
-2. **HTTP Request avec `responseFormat: file`** : Garantit que les données binaires sont correctement capturées
-3. **Pas de dépendance au node Telegram natif** : Évite les bugs connus du node Telegram Get File
+1. **Pas de binary data dans n8n** : curl écrit directement sur le disque, pas besoin de passer par les nodes n8n
+2. **Tout en une seule commande** : getFile + download dans le même script
+3. **Vérification intégrée** : Le script vérifie que le fichier existe et n'est pas vide
+4. **Compatible avec les credentials existants** : Utilise `$TELEGRAM_BOT_TOKEN` comme variable d'environnement
 
 ### Prérequis
 
-**Variable d'environnement requise** :
+**Variable d'environnement requise dans n8n** :
 ```env
 TELEGRAM_BOT_TOKEN=your_bot_token_here
 ```
 
 ### Références
-- [n8n Docs - Telegram File Operations](https://docs.n8n.io/integrations/builtin/app-nodes/n8n-nodes-base.telegram/file-operations/)
-- [n8n Community - Telegram Get File does not return binary](https://community.n8n.io/t/the-telegram-get-file-module-does-not-return-a-binary-file/88013)
-- [n8n Community - Download video from Telegram](https://community.n8n.io/t/download-a-video-sent-in-a-telegram-chat/49923)
 - [Telegram Bot API - getFile](https://core.telegram.org/bots/api#getfile)
+- [n8n Execute Command Node](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.executecommand/)
 
 ---
 
@@ -258,13 +255,16 @@ INSTAGRAM_USER_ID=17841478707012581
 
 ## Changelog des corrections
 
-### v6 (2025-11-28) - SOLUTION DÉFINITIVE
-- ✅ **Fix DÉFINITIF**: Remplacement du node Telegram "Get File" par HTTP Request en 2 étapes
-- ✅ Nouveau node "Get Audio File Path" : appelle `getFile` API pour obtenir le `file_path`
-- ✅ Nouveau node "File Path OK?" : vérifie que l'API a retourné `ok: true`
-- ✅ Nouveau node "Download Audio Binary" : télécharge le fichier avec `responseFormat: file`
-- ✅ Contourne le bug du node Telegram natif qui ne retourne pas les binary data
+### v7 (2025-11-28) - SOLUTION DÉFINITIVE avec CURL
+- ✅ **Fix DÉFINITIF** : Utilisation de `curl` via Execute Command au lieu des nodes n8n
+- ✅ Nouveau node "Download Audio with Curl" : script bash qui fait tout (getFile + download)
+- ✅ Écriture directe sur disque : contourne tous les problèmes de binary data
+- ✅ Vérification intégrée : le script vérifie que le fichier existe et n'est pas vide
 - ⚠️ **Prérequis** : Variable d'environnement `TELEGRAM_BOT_TOKEN` requise
+
+### v6 (2025-11-28)
+- ❌ Tentative: HTTP Request en 2 étapes (getFile + download avec responseFormat: file)
+- ❌ Ne fonctionnait pas : les binary data se perdaient toujours entre HTTP Request et Read/Write File
 
 ### v5 (2025-11-28)
 - ❌ Tentative: Node Code "Check & Pass Binary" avec `binary: item.binary`
