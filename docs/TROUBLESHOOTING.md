@@ -22,59 +22,80 @@ Dans le node "Save Telegram Audio"
 ### Cause
 Lorsque le node `Download Telegram Audio` a l'option `onError: "continueRegularOutput"` activée, il continue l'exécution même en cas d'erreur (file_id invalide, fichier expiré, etc.) mais **sans données binaires**. Le node suivant `Save Telegram Audio` tente alors d'écrire un fichier binaire qui n'existe pas.
 
-### Solution appliquée (v5) - CORRECTIF DÉFINITIF
+### Solution appliquée (v6) - CORRECTIF DÉFINITIF
 
-**Problème v4** : Le node IF ne transmet pas les données binaires automatiquement. Un IF node avec `Object.keys($binary).length > 0` évalue correctement la condition mais **ne passe pas les binary data** au node suivant.
+**Problème racine identifié** : Le node Telegram natif "Get File" avec `onError: continueRegularOutput` ne retourne parfois pas les données binaires correctement. C'est un [problème connu](https://community.n8n.io/t/the-telegram-get-file-module-does-not-return-a-binary-file/88013) dans n8n.
 
-**Solution v5** : Ajouter un **node Code intermédiaire** qui vérifie ET transmet explicitement les données binaires.
+**Solution v6** : Remplacer le node Telegram par une approche **HTTP Request en 2 étapes** qui télécharge le fichier directement depuis l'API Telegram.
 
-1. **Nouveau node "Check & Pass Binary"** (Code node) :
-```javascript
-// Vérifier si les données binaires existent et les transmettre
-const items = $input.all();
-const results = [];
+#### Nouveau flux de téléchargement audio
 
-for (const item of items) {
-  const hasBinary = item.binary && Object.keys(item.binary).length > 0;
+```
+Has Telegram Audio? (true)
+    │
+    ▼
+Get Audio File Path (HTTP Request)
+    │ URL: https://api.telegram.org/bot{TOKEN}/getFile?file_id={audio_file_id}
+    │ Retourne: { ok: true, result: { file_path: "..." } }
+    │
+    ▼
+File Path OK? (IF: $json.ok === true)
+    │
+    ├── true ──▶ Download Audio Binary (HTTP Request)
+    │            │ URL: https://api.telegram.org/file/bot{TOKEN}/{file_path}
+    │            │ Response Format: File (binary)
+    │            │
+    │            ▼
+    │            Save Telegram Audio ──▶ Normalize
+    │
+    └── false ──▶ Normalize Telegram Data (skip audio)
+```
 
-  if (hasBinary) {
-    // Transmettre les données avec binary intact
-    results.push({
-      json: { ...item.json, has_binary: true },
-      binary: item.binary
-    });
-  } else {
-    // Pas de binary - marquer comme skip
-    results.push({
-      json: { ...item.json, has_binary: false }
-    });
+#### Configuration des nodes
+
+1. **Get Audio File Path** (HTTP Request) :
+```json
+{
+  "url": "https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/getFile?file_id={{ $('Parse Telegram Video').first().json.audio_file_id }}",
+  "onError": "continueRegularOutput"
+}
+```
+
+2. **File Path OK?** (IF) :
+```json
+{
+  "conditions": [{ "leftValue": "={{ $json.ok }}", "rightValue": true }]
+}
+```
+
+3. **Download Audio Binary** (HTTP Request) :
+```json
+{
+  "url": "https://api.telegram.org/file/bot{{ $env.TELEGRAM_BOT_TOKEN }}/{{ $json.result.file_path }}",
+  "options": {
+    "response": { "response": { "responseFormat": "file" } }
   }
 }
-
-return results;
-```
-
-2. **Node IF simplifié** qui vérifie `has_binary === true`
-
-3. **Nouveau flux de connexions** :
-```
-Download Telegram Audio → Check & Pass Binary → Has Binary Data?
-                                                  ├── true → Save Telegram Audio → Normalize
-                                                  └── false → Normalize Telegram Data
 ```
 
 ### Pourquoi cette solution fonctionne
 
-D'après la [communauté n8n](https://community.n8n.io/t/binary-data-not-passing-through/80088), les données binaires doivent être **explicitement retournées** par les nodes Code :
+1. **Séparation des étapes** : L'API Telegram nécessite 2 appels séparés (getFile pour le path, puis download)
+2. **HTTP Request avec `responseFormat: file`** : Garantit que les données binaires sont correctement capturées
+3. **Pas de dépendance au node Telegram natif** : Évite les bugs connus du node Telegram Get File
 
-> "Le secret est de retourner `binary: item.binary` dans l'objet résultat"
+### Prérequis
 
-Sans cela, le node Code (ou IF) ne transmet que les données JSON et les binary sont perdues.
+**Variable d'environnement requise** :
+```env
+TELEGRAM_BOT_TOKEN=your_bot_token_here
+```
 
 ### Références
-- [n8n Community - Binary data not passing through](https://community.n8n.io/t/binary-data-not-passing-through/80088)
-- [n8n Community - Binary file issue](https://community.n8n.io/t/the-telegram-get-file-module-does-not-return-a-binary-file/88013)
-- [n8n Community - Write Binary File Error](https://community.n8n.io/t/write-binary-file-error-no-binary-data-exists-on-item/26492)
+- [n8n Docs - Telegram File Operations](https://docs.n8n.io/integrations/builtin/app-nodes/n8n-nodes-base.telegram/file-operations/)
+- [n8n Community - Telegram Get File does not return binary](https://community.n8n.io/t/the-telegram-get-file-module-does-not-return-a-binary-file/88013)
+- [n8n Community - Download video from Telegram](https://community.n8n.io/t/download-a-video-sent-in-a-telegram-chat/49923)
+- [Telegram Bot API - getFile](https://core.telegram.org/bots/api#getfile)
 
 ---
 
@@ -222,6 +243,7 @@ ls -la /tmp/n8n/
 CLOUDINARY_CLOUD_NAME=dxpj6gxjh
 CLOUDINARY_UPLOAD_PRESET=ml_default
 TELEGRAM_CHAT_ID=8263106324
+TELEGRAM_BOT_TOKEN=your_bot_token_here  # REQUIS pour v6!
 INSTAGRAM_USER_ID=17841478707012581
 ```
 
@@ -236,10 +258,17 @@ INSTAGRAM_USER_ID=17841478707012581
 
 ## Changelog des corrections
 
+### v6 (2025-11-28) - SOLUTION DÉFINITIVE
+- ✅ **Fix DÉFINITIF**: Remplacement du node Telegram "Get File" par HTTP Request en 2 étapes
+- ✅ Nouveau node "Get Audio File Path" : appelle `getFile` API pour obtenir le `file_path`
+- ✅ Nouveau node "File Path OK?" : vérifie que l'API a retourné `ok: true`
+- ✅ Nouveau node "Download Audio Binary" : télécharge le fichier avec `responseFormat: file`
+- ✅ Contourne le bug du node Telegram natif qui ne retourne pas les binary data
+- ⚠️ **Prérequis** : Variable d'environnement `TELEGRAM_BOT_TOKEN` requise
+
 ### v5 (2025-11-28)
-- ✅ Fix DÉFINITIF: Binary file 'data' not found (le IF node ne passait pas les binary)
-- ✅ Ajout: Node Code "Check & Pass Binary" qui transmet explicitement `binary: item.binary`
-- ✅ Restructuration: Download → Check & Pass Binary → IF → Save/Skip
+- ❌ Tentative: Node Code "Check & Pass Binary" avec `binary: item.binary`
+- ❌ Ne fonctionnait pas car le node Telegram en amont ne retournait jamais de binary
 
 ### v4 (2025-11-28)
 - ❌ Tentative: Node "Has Binary Data?" IF - ne fonctionnait pas car IF ne transmet pas binary
