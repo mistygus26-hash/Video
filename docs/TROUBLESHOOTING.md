@@ -22,52 +22,59 @@ Dans le node "Save Telegram Audio"
 ### Cause
 Lorsque le node `Download Telegram Audio` a l'option `onError: "continueRegularOutput"` activée, il continue l'exécution même en cas d'erreur (file_id invalide, fichier expiré, etc.) mais **sans données binaires**. Le node suivant `Save Telegram Audio` tente alors d'écrire un fichier binaire qui n'existe pas.
 
-### Solution appliquée (v4)
+### Solution appliquée (v5) - CORRECTIF DÉFINITIF
 
-1. **Ajout du node "Has Binary Data?"** entre Download et Save :
-```json
-{
-  "name": "Has Binary Data?",
-  "type": "n8n-nodes-base.if",
-  "parameters": {
-    "conditions": {
-      "conditions": [{
-        "leftValue": "={{ Object.keys($binary || {}).length }}",
-        "rightValue": "0",
-        "operator": {"type": "number", "operation": "gt"}
-      }]
-    }
-  }
-}
-```
+**Problème v4** : Le node IF ne transmet pas les données binaires automatiquement. Un IF node avec `Object.keys($binary).length > 0` évalue correctement la condition mais **ne passe pas les binary data** au node suivant.
 
-2. **Nouveau flux de connexions** :
-```
-Download Telegram Audio → Has Binary Data?
-                            ├── true → Save Telegram Audio → Normalize
-                            └── false → Normalize Telegram Data
-```
+**Solution v5** : Ajouter un **node Code intermédiaire** qui vérifie ET transmet explicitement les données binaires.
 
-3. **Mise à jour de Normalize Telegram Data** pour vérifier si l'audio a été sauvegardé :
+1. **Nouveau node "Check & Pass Binary"** (Code node) :
 ```javascript
-let hasMusic = false;
-let musicFile = null;
+// Vérifier si les données binaires existent et les transmettre
+const items = $input.all();
+const results = [];
 
-try {
-  const saveAudioNode = $('Save Telegram Audio').first();
-  if (saveAudioNode && saveAudioNode.json) {
-    hasMusic = true;
-    musicFile = telegramData.temp_dir + '/music.mp3';
+for (const item of items) {
+  const hasBinary = item.binary && Object.keys(item.binary).length > 0;
+
+  if (hasBinary) {
+    // Transmettre les données avec binary intact
+    results.push({
+      json: { ...item.json, has_binary: true },
+      binary: item.binary
+    });
+  } else {
+    // Pas de binary - marquer comme skip
+    results.push({
+      json: { ...item.json, has_binary: false }
+    });
   }
-} catch (e) {
-  // Le node Save Telegram Audio n'a pas été exécuté = pas d'audio
-  hasMusic = false;
-  musicFile = null;
 }
+
+return results;
 ```
+
+2. **Node IF simplifié** qui vérifie `has_binary === true`
+
+3. **Nouveau flux de connexions** :
+```
+Download Telegram Audio → Check & Pass Binary → Has Binary Data?
+                                                  ├── true → Save Telegram Audio → Normalize
+                                                  └── false → Normalize Telegram Data
+```
+
+### Pourquoi cette solution fonctionne
+
+D'après la [communauté n8n](https://community.n8n.io/t/binary-data-not-passing-through/80088), les données binaires doivent être **explicitement retournées** par les nodes Code :
+
+> "Le secret est de retourner `binary: item.binary` dans l'objet résultat"
+
+Sans cela, le node Code (ou IF) ne transmet que les données JSON et les binary sont perdues.
 
 ### Références
+- [n8n Community - Binary data not passing through](https://community.n8n.io/t/binary-data-not-passing-through/80088)
 - [n8n Community - Binary file issue](https://community.n8n.io/t/the-telegram-get-file-module-does-not-return-a-binary-file/88013)
+- [n8n Community - Write Binary File Error](https://community.n8n.io/t/write-binary-file-error-no-binary-data-exists-on-item/26492)
 
 ---
 
@@ -229,9 +236,13 @@ INSTAGRAM_USER_ID=17841478707012581
 
 ## Changelog des corrections
 
+### v5 (2025-11-28)
+- ✅ Fix DÉFINITIF: Binary file 'data' not found (le IF node ne passait pas les binary)
+- ✅ Ajout: Node Code "Check & Pass Binary" qui transmet explicitement `binary: item.binary`
+- ✅ Restructuration: Download → Check & Pass Binary → IF → Save/Skip
+
 ### v4 (2025-11-28)
-- ✅ Fix: Binary file 'data' not found sur Save Telegram Audio
-- ✅ Ajout: Node "Has Binary Data?" pour vérifier les données binaires avant sauvegarde
+- ❌ Tentative: Node "Has Binary Data?" IF - ne fonctionnait pas car IF ne transmet pas binary
 - ✅ Amélioration: Normalize Telegram Data vérifie si l'audio a été sauvegardé via try/catch
 
 ### v3 (2025-11-27)
